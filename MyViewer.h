@@ -6,6 +6,8 @@
 #include <QGLViewer/qglviewer.h>
 #include <OpenMesh/Core/Mesh/TriMesh_ArrayKernelT.hh>
 
+#include <surface-midpoint-coons.hh>
+
 using qglviewer::Vec;
 
 class MyViewer : public QGLViewer {
@@ -27,6 +29,7 @@ public:
   inline void setSlicingScaling(double scaling);
   bool openMesh(const std::string &filename, bool update_view = true);
   bool openBezier(const std::string &filename, bool update_view = true);
+  bool openLoop(const std::string &filename, bool update_view = true);
   bool saveBezier(const std::string &filename);
 
 signals:
@@ -69,10 +72,15 @@ private:
   static void bernsteinAll(size_t n, double u, std::vector<double> &coeff);
   void generateMesh(size_t resolution);
 
+  // Displacement
+  Geometry::Point3D evalDisplacement(const Geometry::Point2D &uv) const;
+  void generateDisplacementMesh(size_t resolution);
+
   // Visualization
   void setupCamera();
   Vec meanMapColor(double d) const;
   void drawControlNet() const;
+  void drawDisplacementControls() const;
   void drawAxes() const;
   void drawAxesWithNames() const;
   static Vec intersectLines(const Vec &ap, const Vec &ad, const Vec &bp, const Vec &bd);
@@ -84,7 +92,7 @@ private:
   // Member variables //
   //////////////////////
 
-  enum class ModelType { NONE, MESH, BEZIER_SURFACE } model_type;
+  enum class ModelType { NONE, MESH, BEZIER_SURFACE, DISPLACEMENT } model_type;
 
   // Mesh
   MyMesh mesh;
@@ -92,6 +100,16 @@ private:
   // Bezier
   size_t degree[2];
   std::vector<Vec> control_points;
+
+  // Displacement
+  struct Displacement {
+    double radius;
+    Geometry::Point3D last_pos;
+    Geometry::Vector3D vector;
+  };
+  Geometry::Point2DVector parameters;
+  Transfinite::SurfaceMidpointCoons surface;
+  std::map<size_t, Displacement> displacements;
 
   // Visualization
   double mean_min, mean_max, cutoff_ratio;

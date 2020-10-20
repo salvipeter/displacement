@@ -67,9 +67,10 @@ MyWindow::~MyWindow() {
 void MyWindow::open() {
   auto filename =
     QFileDialog::getOpenFileName(this, tr("Open File"), last_directory,
-                                 tr("Readable files (*.obj *.ply *.stl *.bzr);;"
+                                 tr("Readable files (*.obj *.ply *.stl *.bzr *.lop);;"
                                     "Mesh (*.obj *.ply *.stl);;"
                                     "Bézier surface (*.bzr);;"
+                                    "Curve loop (*.lop);;"
                                     "All files (*.*)"));
   if(filename.isEmpty())
     return;
@@ -78,6 +79,8 @@ void MyWindow::open() {
   bool ok;
   if (filename.endsWith(".bzr"))
     ok = viewer->openBezier(filename.toUtf8().data());
+  else if (filename.endsWith(".lop"))
+    ok = viewer->openLoop(filename.toUtf8().data());
   else
     ok = viewer->openMesh(filename.toUtf8().data());
 

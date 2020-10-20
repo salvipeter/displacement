@@ -10,6 +10,8 @@
 #include <OpenMesh/Core/IO/MeshIO.hh>
 #include <OpenMesh/Tools/Smoother/JacobiLaplaceSmootherT.hh>
 
+#include <domain.hh>
+
 #ifdef BETTER_MEAN_CURVATURE
 #include "Eigen/Eigenvalues"
 #include "Eigen/Geometry"
@@ -28,6 +30,8 @@
 #define GL_CLAMP_TO_EDGE 0x812F
 #define GL_BGRA 0x80E1
 #endif
+
+using namespace Geometry;
 
 MyViewer::MyViewer(QWidget *parent) :
   QGLViewer(parent), model_type(ModelType::NONE),
@@ -347,6 +351,8 @@ void MyViewer::updateVertexNormals() {
 void MyViewer::updateMesh(bool update_mean_range) {
   if (model_type == ModelType::BEZIER_SURFACE)
     generateMesh(50);
+  else if (model_type == ModelType::DISPLACEMENT)
+    generateDisplacementMesh(30);
   mesh.request_face_normals(); mesh.request_vertex_normals();
   mesh.update_face_normals();
 #ifdef USE_JET_NORMALS
@@ -410,6 +416,45 @@ bool MyViewer::openBezier(const std::string &filename, bool update_view) {
   return true;
 }
 
+bool MyViewer::openLoop(const std::string &filename, bool update_view) {
+  std::ifstream f(filename);
+  if (!f.is_open())
+    return false;
+
+  size_t n, deg, nk, nc;
+  DoubleVector knots;
+  PointVector cpts;
+  CurveVector cv;
+
+  f >> n;
+  cv.reserve(n);
+  for (size_t i = 0; i < n; ++i) {
+    f >> deg;
+    f >> nk;
+    knots.resize(nk);
+    for (size_t j = 0; j < nk; ++j)
+      f >> knots[j];
+    f >> nc;
+    cpts.resize(nc);
+    for (size_t j = 0; j < nc; ++j)
+      f >> cpts[j][0] >> cpts[j][1] >> cpts[j][2];
+    cv.push_back(std::make_shared<BSCurve>(deg, knots, cpts));
+  }
+
+  surface.setCurves(cv);
+  surface.setupLoop();
+  surface.update();
+  displacements.clear();
+
+  model_type = ModelType::DISPLACEMENT;
+  last_filename = filename;
+  updateMesh(update_view);
+  if (update_view)
+    setupCamera();
+
+  return true;
+}
+
 bool MyViewer::saveBezier(const std::string &filename) {
   if (model_type != ModelType::BEZIER_SURFACE)
     return false;
@@ -461,6 +506,9 @@ void MyViewer::init() {
 void MyViewer::draw() {
   if (model_type == ModelType::BEZIER_SURFACE && show_control_points)
     drawControlNet();
+
+  if (model_type == ModelType::DISPLACEMENT && show_control_points)
+    drawDisplacementControls();
 
   glPolygonMode(GL_FRONT_AND_BACK, !show_solid && show_wireframe ? GL_LINE : GL_FILL);
   glEnable(GL_POLYGON_OFFSET_FILL);
@@ -547,6 +595,17 @@ void MyViewer::drawControlNet() const {
   glEnable(GL_LIGHTING);
 }
 
+void MyViewer::drawDisplacementControls() const {
+  glPointSize(8.0);
+  glColor3d(1.0, 0.0, 1.0);
+  glBegin(GL_POINTS);
+  for (const auto &d : displacements)
+    glVertex3dv(evalDisplacement(parameters[d.first]).data());
+  glEnd();
+  glPointSize(1.0);
+  glEnable(GL_LIGHTING);
+}
+
 void MyViewer::drawAxes() const {
   const Vec &p = axes.position;
   glColor3d(1.0, 0.0, 0.0);
@@ -583,6 +642,13 @@ void MyViewer::drawWithNames() {
       glPopName();
     }
     break;
+  case ModelType::DISPLACEMENT:
+    for (auto v : mesh.vertices()) {
+      glPushName(v.idx());
+      glRasterPos3dv(mesh.point(v).data());
+      glPopName();
+    }
+    break;
   }
 }
 
@@ -616,8 +682,13 @@ void MyViewer::postSelection(const QPoint &p) {
     return;
   }
 
+  if (displacements.find(sel) == displacements.end())
+    displacements[sel] = { 0.3, Point3D(0, 0, 0), Vector3D(0, 0, 0) };
+  auto last_pos = mesh.point(MyMesh::VertexHandle(sel));
+  displacements[sel].last_pos = { last_pos[0], last_pos[1], last_pos[2] };
+
   selected_vertex = sel;
-  if (model_type == ModelType::MESH)
+  if (model_type == ModelType::MESH || model_type == ModelType::DISPLACEMENT)
     axes.position = Vec(mesh.point(MyMesh::VertexHandle(sel)).data());
   if (model_type == ModelType::BEZIER_SURFACE)
     axes.position = control_points[sel];
@@ -683,6 +754,20 @@ void MyViewer::keyPressEvent(QKeyEvent *e) {
     case Qt::Key_F:
       fairMesh();
       update();
+      break;
+    case Qt::Key_1:
+      if (axes.shown && model_type == ModelType::DISPLACEMENT) {
+        displacements[selected_vertex].radius *= 2.0/3.0;
+        updateMesh(false);
+        update();
+      }
+      break;
+    case Qt::Key_2:
+      if (axes.shown && model_type == ModelType::DISPLACEMENT) {
+        displacements[selected_vertex].radius *= 3.0/2.0;
+        updateMesh(false);
+        update();
+      }
       break;
     default:
       QGLViewer::keyPressEvent(e);
@@ -764,6 +849,129 @@ void MyViewer::generateMesh(size_t resolution) {
     }
 }
 
+static double trapezoid(const std::function<double(double)> &f, double a, double b,
+                        size_t n, double s) {
+  if (n == 1)
+    return (f(a) + f(b)) / 2.0 * (b - a);
+  double k = std::pow(2, n - 2);
+  double h = (b - a) / k;
+  double sum = 0;
+  for (double x = a + h / 2.0; x <= b; x += h)
+    sum += f(x);
+  return (s + h * sum) / 2.0;
+}
+
+static double simpson(const std::function<double(double)> &f, double a, double b,
+                      size_t iterations = 100, double epsilon = 1.0e-7) {
+  double s, s_prev = std::numeric_limits<double>::lowest(), st_prev = s_prev;
+  for (size_t i = 1; i <= iterations; ++i) {
+    double st = trapezoid(f, a, b, i, st_prev);
+    s = (4.0 * st - st_prev) / 3.0;
+    if (i > 5 && (std::abs(s - s_prev) < epsilon * std::abs(s_prev) || (s == 0 && s_prev == 0)))
+      break;
+    s_prev = s;
+    st_prev = st;
+  }
+  return s;
+}
+
+static double erbsBlend(double t) {
+  size_t iterations = 20;
+  constexpr double Sd = 1.6571376796460222;
+  auto phi = [](double s) { return std::exp(-std::pow(s - 0.5, 2) / (s * (1 - s))); };
+  return Sd * simpson(phi, 0, t, iterations);
+}
+
+[[maybe_unused]]
+static Point2D intersectCircle(double r, const Point2D &a, const Point2D &b) {
+  auto d = b - a;
+  auto dr2 = d.normSqr();
+  auto D = a[0] * b[1] - a[1] * b[0];
+  auto R = std::sqrt(r * r * dr2 - D * D);
+  auto sign = d[1] < 0 ? -1.0 : 1.0;
+  auto x1 = (D * d[1] + sign * d[0] * R) / dr2;
+  auto x2 = (D * d[1] - sign * d[0] * R) / dr2;
+  auto y1 = (-D * d[0] + std::abs(d[1]) * R) / dr2;
+  auto y2 = (-D * d[0] - std::abs(d[1]) * R) / dr2;
+  Point2D p1(x1, y1), p2(x2, y2);
+  return (p1 - a) * (b - a) < 0 ? p2 : p1;
+}
+
+static Point2D intersectLines(const Point2D &p1, const Point2D &p2,
+                              const Point2D &q1, const Point2D &q2) {
+  auto ap = p1, ad = p2 - p1, bp = q1, bd = q2 - q1;
+  double a = ad * ad, b = ad * bd, c = bd * bd;
+  double d = ad * (ap - bp), e = bd * (ap - bp);
+  if (a * c - b * b < 1.0e-7)
+    return ap;
+  double s = (b * e - c * d) / (a * c - b * b);
+  return ap + ad * s;
+}
+
+[[maybe_unused]]
+static Point2D intersectPoly(size_t n, const Point2D &a, const Point2D &b) {
+  Point2DVector poly;
+  for (size_t i = 0; i < n; ++i) {
+    double phi = 2 * i * M_PI / n;
+    poly.emplace_back(std::cos(phi), std::sin(phi));
+  }
+  auto dmin = std::numeric_limits<double>::max();
+  Point2D pmin;
+  for (size_t i = 0; i < n; ++i) {
+    const auto &p1 = poly[i];
+    const auto &p2 = poly[(i+1)%n];
+    auto x = intersectLines(a, b, p1, p2);
+    if ((x - a) * (b - a) < 0)
+      continue;
+    double d = (x - a).norm();
+    if (d < dmin) {
+      dmin = d;
+      pmin = x;
+    }
+  }
+  return pmin;
+}
+
+static double displacementBlend(size_t n, const Point2D &footpoint, const Point2D &uv, double r) {
+  double d = (uv - footpoint).norm();
+  if (d < 1e-5)
+    return 1.0;
+  double dmax = (intersectCircle(std::sin(M_PI / 2 - M_PI / n), footpoint, uv) - footpoint).norm();
+  // double dmax = (intersectPoly(n, footpoint, uv) - footpoint).norm();
+  if (d - dmax > -1e-5)
+    return 0.0;
+  double alpha = erbsBlend(d / dmax);
+  double h = std::min(d / ((1 - alpha) * r + alpha * dmax), 1.0);
+  return 1 - erbsBlend(h);
+}
+
+Point3D MyViewer::evalDisplacement(const Point2D &uv) const {
+  auto p = surface.eval(uv);
+  for (const auto &ds : displacements) {
+    const auto &[index, d] = ds;
+    p += d.vector * displacementBlend(surface.domain()->size(), parameters[index], uv, d.radius);
+  }
+  return p;
+}
+
+void MyViewer::generateDisplacementMesh(size_t resolution) {
+  mesh.clear();
+
+  // Evaluate the surface
+  parameters = surface.domain()->parameters(resolution);
+  PointVector points; points.reserve(parameters.size());
+  std::transform(parameters.begin(), parameters.end(), std::back_inserter(points),
+                 [&](const Point2D &uv) { return evalDisplacement(uv); });
+
+  // Convert to OpenMesh
+  auto topology = surface.domain()->meshTopology(resolution);
+  std::vector<MyMesh::VertexHandle> handles;
+  for (const auto &p : points)
+    handles.push_back(mesh.add_vertex(Vector(p.data())));
+  for (const auto &tri : topology.triangles())
+    mesh.add_face({ handles[tri[0]], handles[tri[1]], handles[tri[2]] });
+}
+
 void MyViewer::mouseMoveEvent(QMouseEvent *e) {
   if (!axes.shown ||
       (axes.selected_axis < 0 && !(e->modifiers() & Qt::ControlModifier)) ||
@@ -786,8 +994,14 @@ void MyViewer::mouseMoveEvent(QMouseEvent *e) {
   if (model_type == ModelType::MESH)
     mesh.set_point(MyMesh::VertexHandle(selected_vertex),
                    Vector(static_cast<double *>(axes.position)));
-  if (model_type == ModelType::BEZIER_SURFACE)
+  else if (model_type == ModelType::BEZIER_SURFACE)
     control_points[selected_vertex] = axes.position;
+  else if (model_type == ModelType::DISPLACEMENT) {
+    auto &d = displacements[selected_vertex];
+    Point3D new_pos(axes.position[0], axes.position[1], axes.position[2]);
+    d.vector += new_pos - d.last_pos;
+    d.last_pos = new_pos;
+  }
   updateMesh();
   update();
 }
