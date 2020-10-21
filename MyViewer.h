@@ -73,7 +73,7 @@ private:
   void generateMesh(size_t resolution);
 
   // Displacement
-  Geometry::Point3D evalDisplacement(const Geometry::Point2D &uv) const;
+  Geometry::Point3D evalDisplacement(size_t index) const;
   void generateDisplacementMesh(size_t resolution);
 
   // Visualization
@@ -102,10 +102,13 @@ private:
   std::vector<Vec> control_points;
 
   // Displacement
+  size_t domain_sides;
+  Geometry::TriMesh domain_mesh;
   struct Displacement {
     double radius;
     Geometry::Point3D last_pos;
     Geometry::Vector3D vector;
+    Geometry::DoubleVector blend;
   };
   Geometry::Point2DVector parameters;
   Transfinite::SurfaceMidpointCoons surface;

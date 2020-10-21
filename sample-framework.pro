@@ -5,8 +5,8 @@ CONFIG += c++17 qt opengl debug
 QT += gui widgets opengl xml
 QMAKE_CXX = clang++
 
-HEADERS = MyWindow.h MyViewer.h MyViewer.hpp
-SOURCES = MyWindow.cpp MyViewer.cpp main.cpp
+HEADERS = MyWindow.h MyViewer.h MyViewer.hpp BlendFunction.h
+SOURCES = MyWindow.cpp MyViewer.cpp main.cpp BlendFunction.cpp
 
 TRANSFINITE = /home/salvi/project/transfinite
 INCLUDEPATH += /usr/include/eigen3 $${TRANSFINITE}/src/geom $${TRANSFINITE}/src/transfinite

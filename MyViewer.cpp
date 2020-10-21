@@ -25,6 +25,7 @@
 #endif
 
 #include "MyViewer.h"
+#include "BlendFunction.h"
 
 #ifdef _WIN32
 #define GL_CLAMP_TO_EDGE 0x812F
@@ -600,7 +601,7 @@ void MyViewer::drawDisplacementControls() const {
   glColor3d(1.0, 0.0, 1.0);
   glBegin(GL_POINTS);
   for (const auto &d : displacements)
-    glVertex3dv(evalDisplacement(parameters[d.first]).data());
+    glVertex3dv(evalDisplacement(d.first).data());
   glEnd();
   glPointSize(1.0);
   glEnable(GL_LIGHTING);
@@ -682,8 +683,13 @@ void MyViewer::postSelection(const QPoint &p) {
     return;
   }
 
-  if (displacements.find(sel) == displacements.end())
-    displacements[sel] = { 0.3, Point3D(0, 0, 0), Vector3D(0, 0, 0) };
+  if (displacements.find(sel) == displacements.end()) {
+    double default_radius = 0.3;
+    displacements[sel] = {
+      default_radius, Point3D(0, 0, 0), Vector3D(0, 0, 0),
+      computeBlendFunction(domain_sides, domain_mesh, parameters, sel, default_radius)
+    };
+  }
   auto last_pos = mesh.point(MyMesh::VertexHandle(sel));
   displacements[sel].last_pos = { last_pos[0], last_pos[1], last_pos[2] };
 
@@ -758,6 +764,9 @@ void MyViewer::keyPressEvent(QKeyEvent *e) {
     case Qt::Key_1:
       if (axes.shown && model_type == ModelType::DISPLACEMENT) {
         displacements[selected_vertex].radius *= 2.0/3.0;
+        displacements[selected_vertex].blend =
+          computeBlendFunction(domain_sides, domain_mesh, parameters, selected_vertex,
+                               displacements[selected_vertex].radius);
         updateMesh(false);
         update();
       }
@@ -765,6 +774,9 @@ void MyViewer::keyPressEvent(QKeyEvent *e) {
     case Qt::Key_2:
       if (axes.shown && model_type == ModelType::DISPLACEMENT) {
         displacements[selected_vertex].radius *= 3.0/2.0;
+        displacements[selected_vertex].blend =
+          computeBlendFunction(domain_sides, domain_mesh, parameters, selected_vertex,
+                               displacements[selected_vertex].radius);
         updateMesh(false);
         update();
       }
@@ -849,126 +861,30 @@ void MyViewer::generateMesh(size_t resolution) {
     }
 }
 
-static double trapezoid(const std::function<double(double)> &f, double a, double b,
-                        size_t n, double s) {
-  if (n == 1)
-    return (f(a) + f(b)) / 2.0 * (b - a);
-  double k = std::pow(2, n - 2);
-  double h = (b - a) / k;
-  double sum = 0;
-  for (double x = a + h / 2.0; x <= b; x += h)
-    sum += f(x);
-  return (s + h * sum) / 2.0;
-}
-
-static double simpson(const std::function<double(double)> &f, double a, double b,
-                      size_t iterations = 100, double epsilon = 1.0e-7) {
-  double s, s_prev = std::numeric_limits<double>::lowest(), st_prev = s_prev;
-  for (size_t i = 1; i <= iterations; ++i) {
-    double st = trapezoid(f, a, b, i, st_prev);
-    s = (4.0 * st - st_prev) / 3.0;
-    if (i > 5 && (std::abs(s - s_prev) < epsilon * std::abs(s_prev) || (s == 0 && s_prev == 0)))
-      break;
-    s_prev = s;
-    st_prev = st;
-  }
-  return s;
-}
-
-static double erbsBlend(double t) {
-  size_t iterations = 20;
-  constexpr double Sd = 1.6571376796460222;
-  auto phi = [](double s) { return std::exp(-std::pow(s - 0.5, 2) / (s * (1 - s))); };
-  return Sd * simpson(phi, 0, t, iterations);
-}
-
-[[maybe_unused]]
-static Point2D intersectCircle(double r, const Point2D &a, const Point2D &b) {
-  auto d = b - a;
-  auto dr2 = d.normSqr();
-  auto D = a[0] * b[1] - a[1] * b[0];
-  auto R = std::sqrt(r * r * dr2 - D * D);
-  auto sign = d[1] < 0 ? -1.0 : 1.0;
-  auto x1 = (D * d[1] + sign * d[0] * R) / dr2;
-  auto x2 = (D * d[1] - sign * d[0] * R) / dr2;
-  auto y1 = (-D * d[0] + std::abs(d[1]) * R) / dr2;
-  auto y2 = (-D * d[0] - std::abs(d[1]) * R) / dr2;
-  Point2D p1(x1, y1), p2(x2, y2);
-  return (p1 - a) * (b - a) < 0 ? p2 : p1;
-}
-
-static Point2D intersectLines(const Point2D &p1, const Point2D &p2,
-                              const Point2D &q1, const Point2D &q2) {
-  auto ap = p1, ad = p2 - p1, bp = q1, bd = q2 - q1;
-  double a = ad * ad, b = ad * bd, c = bd * bd;
-  double d = ad * (ap - bp), e = bd * (ap - bp);
-  if (a * c - b * b < 1.0e-7)
-    return ap;
-  double s = (b * e - c * d) / (a * c - b * b);
-  return ap + ad * s;
-}
-
-[[maybe_unused]]
-static Point2D intersectPoly(size_t n, const Point2D &a, const Point2D &b) {
-  Point2DVector poly;
-  for (size_t i = 0; i < n; ++i) {
-    double phi = 2 * i * M_PI / n;
-    poly.emplace_back(std::cos(phi), std::sin(phi));
-  }
-  auto dmin = std::numeric_limits<double>::max();
-  Point2D pmin;
-  for (size_t i = 0; i < n; ++i) {
-    const auto &p1 = poly[i];
-    const auto &p2 = poly[(i+1)%n];
-    auto x = intersectLines(a, b, p1, p2);
-    if ((x - a) * (b - a) < 0)
-      continue;
-    double d = (x - a).norm();
-    if (d < dmin) {
-      dmin = d;
-      pmin = x;
-    }
-  }
-  return pmin;
-}
-
-static double displacementBlend(size_t n, const Point2D &footpoint, const Point2D &uv, double r) {
-  double d = (uv - footpoint).norm();
-  if (d < 1e-5)
-    return 1.0;
-  double dmax = (intersectCircle(std::sin(M_PI / 2 - M_PI / n), footpoint, uv) - footpoint).norm();
-  // double dmax = (intersectPoly(n, footpoint, uv) - footpoint).norm();
-  if (d - dmax > -1e-5)
-    return 0.0;
-  double alpha = erbsBlend(d / dmax);
-  double h = std::min(d / ((1 - alpha) * r + alpha * dmax), 1.0);
-  return 1 - erbsBlend(h);
-}
-
-Point3D MyViewer::evalDisplacement(const Point2D &uv) const {
-  auto p = surface.eval(uv);
-  for (const auto &ds : displacements) {
-    const auto &[index, d] = ds;
-    p += d.vector * displacementBlend(surface.domain()->size(), parameters[index], uv, d.radius);
+Point3D MyViewer::evalDisplacement(size_t index) const {
+  auto p = surface.eval(parameters[index]);
+  for (const auto &[i, d] : displacements) {
+    p += d.vector * d.blend[index];
   }
   return p;
 }
 
 void MyViewer::generateDisplacementMesh(size_t resolution) {
   mesh.clear();
+  domain_sides = surface.domain()->size();
+  domain_mesh = surface.domain()->meshTopology(resolution);
 
   // Evaluate the surface
   parameters = surface.domain()->parameters(resolution);
   PointVector points; points.reserve(parameters.size());
-  std::transform(parameters.begin(), parameters.end(), std::back_inserter(points),
-                 [&](const Point2D &uv) { return evalDisplacement(uv); });
+  for (size_t i = 0; i < parameters.size(); ++i)
+    points.push_back(evalDisplacement(i));
 
   // Convert to OpenMesh
-  auto topology = surface.domain()->meshTopology(resolution);
   std::vector<MyMesh::VertexHandle> handles;
   for (const auto &p : points)
     handles.push_back(mesh.add_vertex(Vector(p.data())));
-  for (const auto &tri : topology.triangles())
+  for (const auto &tri : domain_mesh.triangles())
     mesh.add_face({ handles[tri[0]], handles[tri[1]], handles[tri[2]] });
 }
 
