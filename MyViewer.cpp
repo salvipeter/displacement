@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -615,7 +616,6 @@ void MyViewer::drawAxes() const {
   drawArrow(p, p + Vec(0.0, axes.size, 0.0), axes.size / 50.0);
   glColor3d(0.0, 0.0, 1.0);
   drawArrow(p, p + Vec(0.0, 0.0, axes.size), axes.size / 50.0);
-  glEnd();
 }
 
 void MyViewer::drawWithNames() {
@@ -760,6 +760,14 @@ void MyViewer::keyPressEvent(QKeyEvent *e) {
     case Qt::Key_F:
       fairMesh();
       update();
+      break;
+    case Qt::Key_0:
+      if (axes.shown && model_type == ModelType::DISPLACEMENT) {
+        displacements.erase(selected_vertex);
+        axes.shown = false;
+        updateMesh(false);
+        update();
+      }
       break;
     case Qt::Key_1:
       if (axes.shown && model_type == ModelType::DISPLACEMENT) {
