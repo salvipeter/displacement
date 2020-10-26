@@ -102,7 +102,7 @@ private:
   std::vector<Vec> control_points;
 
   // Displacement
-  size_t domain_sides;
+  size_t domain_sides, domain_resolution;
   Geometry::TriMesh domain_mesh;
   struct Displacement {
     double radius;

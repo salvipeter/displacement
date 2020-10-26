@@ -1,4 +1,4 @@
-#include <Eigen/Core>
+#include <Eigen/Sparse>
 
 #include "BlendFunction.h"
 
@@ -31,6 +31,8 @@ static double simpson(const std::function<double(double)> &f, double a, double b
 }
 
 static double erbsBlend(double t) {
+  if (t < 1e-5)
+    return 0;
   size_t iterations = 20;
   constexpr double Sd = 1.6571376796460222;
   auto phi = [](double s) { return std::exp(-std::pow(s - 0.5, 2) / (s * (1 - s))); };
@@ -101,15 +103,105 @@ static double displacementBlend(size_t n, const Point2D &footpoint, const Point2
   return 1 - erbsBlend(h);
 }
 
-DoubleVector computeBlendFunction(size_t n, const TriMesh &mesh, const Point2DVector &parameters,
-                                  size_t foot_index, double radius) {
+static Eigen::SparseMatrix<double> laplaceMatrix(const TriMesh &mesh, const PointVector &uvs) {
+  size_t n_all = uvs.size();
+
+  // Set up valences
+  std::vector<size_t> valences(n_all, 0);
+  for (const auto &t : mesh.triangles())
+    for (auto i : t)
+      valences[i]++;
+
+  // Sparse matrix handling
+  Eigen::SparseMatrix<double> Ls(n_all, n_all);
+  Eigen::VectorXd nnz(n_all);
+  for (size_t i = 0; i < n_all; ++i)
+    nnz(i) = valences[i] + 1;
+  Ls.makeCompressed();
+  Ls.reserve(nnz);
+
+  // Laplacian coeficients
+  for (const auto &t : mesh.triangles()) {
+    auto p1 = uvs[t[0]], p2 = uvs[t[1]], p3 = uvs[t[2]];
+    auto a = p3 - p2, b = p1 - p3, c = p2 - p1;
+    double Ai = (b ^ c).norm();
+    double v1_cot = -0.5 * (c * b) / Ai;
+    double v2_cot = -0.5 * (c * a) / Ai;
+    double v3_cot = -0.5 * (a * b) / Ai;
+
+    Ls.coeffRef(t[0], t[0]) += v3_cot + v2_cot;
+    Ls.coeffRef(t[0], t[1]) += -v3_cot;
+    Ls.coeffRef(t[0], t[2]) += -v2_cot;
+
+    Ls.coeffRef(t[1], t[0]) += -v3_cot;
+    Ls.coeffRef(t[1], t[1]) += v3_cot + v1_cot;
+    Ls.coeffRef(t[1], t[2]) += -v1_cot;
+
+    Ls.coeffRef(t[2], t[0]) += -v2_cot;
+    Ls.coeffRef(t[2], t[1]) += -v1_cot;
+    Ls.coeffRef(t[2], t[2]) += v2_cot + v1_cot;
+  }
+
+  return Ls;
+}
+
+[[maybe_unused]]
+double bump(double x, size_t k = 2) {
+  auto base = [=](double y) { return std::exp(-1.0 / std::pow(y, k)); };
+  return base(x) / (base(x) + base(1 - x));
+}
+
+DoubleVector computeBlendFunction(size_t, const TriMesh &mesh, const Point2DVector &parameters,
+                                  const std::function<bool(size_t i)> &on_edge, size_t foot_index,
+                                  double radius) {
   DoubleVector result;
 
   // Old version
-  const auto &foot = parameters[foot_index];
-  result.reserve(parameters.size());
-  for (const auto &uv : parameters)
-    result.push_back(displacementBlend(n, foot, uv, radius));
+  // const auto &foot = parameters[foot_index];
+  // result.reserve(parameters.size());
+  // for (const auto &uv : parameters)
+  //   result.push_back(displacementBlend(n, foot, uv, radius));
+
+  // New version
+  size_t n_all = parameters.size();
+
+  // Set up boundary index map
+  std::vector<size_t> boundary;
+  for (size_t i = 0; i < n_all; ++i)
+    if (on_edge(i))
+      boundary.push_back(i);
+
+  // Prepare the system
+  size_t n_boundary = boundary.size();
+  PointVector points;
+
+  // Laplace matrix + Lagrange multipliers
+  std::transform(parameters.begin(), parameters.end(), std::back_inserter(points),
+                 [](const Point2D &p) { return Point3D(p[0], p[1], 0); });
+  auto A = laplaceMatrix(mesh, points);
+  A.conservativeResize(n_all + n_boundary + 1, n_all + n_boundary + 1);
+  for (size_t j = 0; j < n_boundary; ++j) {
+    size_t i = boundary[j];
+    A.coeffRef(n_all + j, i) = 1;
+    A.coeffRef(i, n_all + j) = 1;
+  }
+  A.coeffRef(foot_index, n_all + n_boundary) = 1;
+  A.coeffRef(n_all + n_boundary, foot_index) = 1;
+
+  // Right-hand side
+  Eigen::SparseVector<double> b(n_all + n_boundary + 1);
+  b.coeffRef(n_all + n_boundary) = 1;
+
+  // Solve
+  Eigen::SparseLU<Eigen::SparseMatrix<double>> solver(A);
+  Eigen::VectorXd x = solver.solve(b);
+
+  // Compute blend
+  auto reparameterize = [&](double x) {
+    return 1.0 - std::pow(1.0 - x, 1.0 / (1.0 - radius));
+  };
+  for (size_t i = 0; i < n_all; ++i)
+    result.push_back(erbsBlend(reparameterize(x(i))));
 
   return result;
 }

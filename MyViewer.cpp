@@ -684,10 +684,12 @@ void MyViewer::postSelection(const QPoint &p) {
   }
 
   if (displacements.find(sel) == displacements.end()) {
-    double default_radius = 0.3;
+    double default_radius = 0.5;
     displacements[sel] = {
       default_radius, Point3D(0, 0, 0), Vector3D(0, 0, 0),
-      computeBlendFunction(domain_sides, domain_mesh, parameters, sel, default_radius)
+      computeBlendFunction(domain_sides, domain_mesh, parameters,
+                           [&](size_t i) { return surface.domain()->onEdge(domain_resolution, i); },
+                           sel, default_radius)
     };
   }
   auto last_pos = mesh.point(MyMesh::VertexHandle(sel));
@@ -771,20 +773,26 @@ void MyViewer::keyPressEvent(QKeyEvent *e) {
       break;
     case Qt::Key_1:
       if (axes.shown && model_type == ModelType::DISPLACEMENT) {
-        displacements[selected_vertex].radius *= 2.0/3.0;
+        displacements[selected_vertex].radius *= displacements[selected_vertex].radius;
         displacements[selected_vertex].blend =
-          computeBlendFunction(domain_sides, domain_mesh, parameters, selected_vertex,
-                               displacements[selected_vertex].radius);
+          computeBlendFunction(domain_sides, domain_mesh, parameters,
+                               [&](size_t i) {
+                                 return surface.domain()->onEdge(domain_resolution, i);
+                               },
+                               selected_vertex, displacements[selected_vertex].radius);
         updateMesh(false);
         update();
       }
       break;
     case Qt::Key_2:
       if (axes.shown && model_type == ModelType::DISPLACEMENT) {
-        displacements[selected_vertex].radius *= 3.0/2.0;
+        displacements[selected_vertex].radius = std::sqrt(displacements[selected_vertex].radius);
         displacements[selected_vertex].blend =
-          computeBlendFunction(domain_sides, domain_mesh, parameters, selected_vertex,
-                               displacements[selected_vertex].radius);
+          computeBlendFunction(domain_sides, domain_mesh, parameters,
+                               [&](size_t i) {
+                                 return surface.domain()->onEdge(domain_resolution, i);
+                               },
+                               selected_vertex, displacements[selected_vertex].radius);
         updateMesh(false);
         update();
       }
@@ -879,6 +887,7 @@ Point3D MyViewer::evalDisplacement(size_t index) const {
 
 void MyViewer::generateDisplacementMesh(size_t resolution) {
   mesh.clear();
+  domain_resolution = resolution;
   domain_sides = surface.domain()->size();
   domain_mesh = surface.domain()->meshTopology(resolution);
 
