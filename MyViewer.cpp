@@ -38,7 +38,7 @@ using namespace Geometry;
 MyViewer::MyViewer(QWidget *parent) :
   QGLViewer(parent), model_type(ModelType::NONE),
   mean_min(0.0), mean_max(0.0), cutoff_ratio(0.05),
-  show_control_points(true), show_solid(true), show_wireframe(false),
+  show_control_points(true), show_solid(true), show_wireframe(false), domain_mode(false),
   visualization(Visualization::PLAIN), slicing_dir(0, 0, 1), slicing_scaling(1),
   last_filename("")
 {
@@ -763,6 +763,11 @@ void MyViewer::keyPressEvent(QKeyEvent *e) {
       fairMesh();
       update();
       break;
+    case Qt::Key_D:
+      domain_mode = !domain_mode;
+      updateMesh(false);
+      update();
+      break;
     case Qt::Key_0:
       if (axes.shown && model_type == ModelType::DISPLACEMENT) {
         displacements.erase(selected_vertex);
@@ -880,7 +885,7 @@ void MyViewer::generateMesh(size_t resolution) {
 Point3D MyViewer::evalDisplacement(size_t index) const {
   auto p = surface.eval(parameters[index]);
   for (const auto &[i, d] : displacements) {
-    p += d.vector * d.blend[index];
+    p += (domain_mode ? Vector3D(0, 0, 1) : d.vector) * d.blend[index];
   }
   return p;
 }
@@ -961,6 +966,10 @@ QString MyViewer::helpString() const {
                "<li>&nbsp;S: Toggle solid (filled polygon) visualization</li>"
                "<li>&nbsp;W: Toggle wireframe visualization</li>"
                "<li>&nbsp;F: Fair mesh</li>"
+               "<li>&nbsp;D: Toggle domain mode [displacement patch]</li>"
+               "<li>&nbsp;0: Erase control [displacement patch]</li>"
+               "<li>&nbsp;1: Decrease control radius [displacement patch]</li>"
+               "<li>&nbsp;2: Increase control radius [displacement patch]</li>"
                "</ul>"
                "<p>There is also a simple selection and movement interface, enabled "
                "only when the wireframe/controlnet is displayed: a mesh vertex can be selected "

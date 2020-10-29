@@ -116,7 +116,7 @@ private:
 
   // Visualization
   double mean_min, mean_max, cutoff_ratio;
-  bool show_control_points, show_solid, show_wireframe;
+  bool show_control_points, show_solid, show_wireframe, domain_mode;
   enum class Visualization { PLAIN, MEAN, SLICING, ISOPHOTES } visualization;
   GLuint isophote_texture, environment_texture, current_isophote_texture, slicing_texture;
   Vector slicing_dir;
