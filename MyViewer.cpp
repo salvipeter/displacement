@@ -426,7 +426,7 @@ bool MyViewer::openLoop(const std::string &filename, bool update_view) {
   size_t n, deg, nk, nc;
   DoubleVector knots;
   PointVector cpts;
-  CurveVector cv;
+  Transfinite::CurveVector cv;
 
   f >> n;
   cv.reserve(n);
@@ -440,7 +440,7 @@ bool MyViewer::openLoop(const std::string &filename, bool update_view) {
     cpts.resize(nc);
     for (size_t j = 0; j < nc; ++j)
       f >> cpts[j][0] >> cpts[j][1] >> cpts[j][2];
-    cv.push_back(std::make_shared<BSCurve>(deg, knots, cpts));
+    cv.push_back(std::make_shared<Transfinite::BSplineCurve>(BSCurve(deg, knots, cpts)));
   }
 
   surface.setCurves(cv);
